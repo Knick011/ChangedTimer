@@ -18,6 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.core.content.ContextCompat
 import com.changedtimer.ui.theme.ChangedTimerTheme
 
 class MainActivity : ComponentActivity() {
@@ -35,6 +36,9 @@ class MainActivity : ComponentActivity() {
         try {
             sharedPrefs = getSharedPreferences("TimerAppPrefs", Context.MODE_PRIVATE)
             _remainingTime.value = sharedPrefs.getInt("available_time", 0)
+            
+            // Add initial log entry
+            addLogEntry("📱 App started")
             
             setContent {
                 ChangedTimerTheme {
@@ -57,7 +61,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
         } catch (e: Exception) {
-            // Log the error but don't crash
             android.util.Log.e("MainActivity", "Error in onCreate", e)
         }
     }
@@ -67,34 +70,55 @@ class MainActivity : ComponentActivity() {
         
         try {
             setupReceivers()
+            addLogEntry("📱 App resumed/started")
         } catch (e: Exception) {
             android.util.Log.e("MainActivity", "Error setting up receivers", e)
         }
     }
 
+    private fun addLogEntry(message: String) {
+        val timestamp = System.currentTimeMillis() % 100000
+        val entry = "$timestamp: $message"
+        _eventLog.value = listOf(entry) + _eventLog.value.take(9)
+        android.util.Log.d("MainActivity", "Event: $entry")
+    }
+
     private fun setupReceivers() {
+        // Unregister any existing receivers first
+        try {
+            timerReceiver?.let { unregisterReceiver(it) }
+            deviceStateReceiver?.let { unregisterReceiver(it) }
+        } catch (e: Exception) {
+            // Ignore if already unregistered
+        }
+
+        // Timer broadcast receiver
         timerReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 try {
+                    android.util.Log.d("MainActivity", "Timer broadcast received: ${intent?.action}")
+                    
                     when (intent?.action) {
                         "timer_started" -> {
-                            _timerStatus.value = "Timer Running (Background)"
-                            _eventLog.value = listOf("Timer started") + _eventLog.value
+                            _timerStatus.value = "⏱️ Timer RUNNING (Background Usage)"
+                            addLogEntry("⏱️ Timer Started")
                         }
                         "timer_stopped" -> {
-                            _timerStatus.value = "Timer Stopped"
-                            _eventLog.value = listOf("Timer stopped") + _eventLog.value
+                            _timerStatus.value = "⏸️ Timer PAUSED"
+                            addLogEntry("⏸️ Timer Paused")
                         }
                         "time_tick" -> {
                             val time = intent.getIntExtra("time_remaining", 0)
                             _remainingTime.value = time
+                            // Don't log every tick, too noisy
                         }
                         "time_expired" -> {
-                            _timerStatus.value = "Time Expired"
-                            _eventLog.value = listOf("Time expired") + _eventLog.value
+                            _timerStatus.value = "❌ Time Expired!"
+                            addLogEntry("❌ Time Expired!")
                             _remainingTime.value = 0
                         }
                     }
+                    
                     // Always update remaining time if present
                     intent?.getIntExtra("time_remaining", -1)?.let { t ->
                         if (t >= 0) _remainingTime.value = t
@@ -105,21 +129,36 @@ class MainActivity : ComponentActivity() {
             }
         }
         
-        val filter = IntentFilter().apply {
+        val timerFilter = IntentFilter().apply {
             addAction("timer_started")
             addAction("timer_stopped")
             addAction("time_tick")
             addAction("time_expired")
         }
-        registerReceiver(timerReceiver, filter)
+        
+        // Use RECEIVER_NOT_EXPORTED for Android 13+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.registerReceiver(this, timerReceiver, timerFilter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(timerReceiver, timerFilter)
+        }
 
+        // Device state broadcast receiver
         deviceStateReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 try {
+                    android.util.Log.d("MainActivity", "Device state broadcast received")
+                    
                     val isLocked = intent?.getBooleanExtra("is_locked", false) ?: false
                     val isScreenOn = intent?.getBooleanExtra("is_screen_on", false) ?: false
-                    val stateMsg = if (isLocked) "Device Locked" else if (isScreenOn) "Device Unlocked" else "Screen Off"
-                    _eventLog.value = listOf(stateMsg) + _eventLog.value
+                    
+                    val stateMsg = when {
+                        isLocked -> "🔒 Device Locked - Timer Paused"
+                        !isScreenOn -> "📱 Screen Off - Timer Paused" 
+                        else -> "🔓 Device Unlocked - Timer Ready"
+                    }
+                    
+                    addLogEntry(stateMsg)
                 } catch (e: Exception) {
                     android.util.Log.e("MainActivity", "Error in device state receiver", e)
                 }
@@ -127,14 +166,28 @@ class MainActivity : ComponentActivity() {
         }
         
         val deviceFilter = IntentFilter("com.changedtimer.DEVICE_STATE_CHANGED")
-        registerReceiver(deviceStateReceiver, deviceFilter)
+        
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.registerReceiver(this, deviceStateReceiver, deviceFilter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(deviceStateReceiver, deviceFilter)
+        }
+
+        addLogEntry("📡 Receivers registered")
     }
 
     override fun onStop() {
         super.onStop()
+        addLogEntry("🏠 App going to background")
+        // Don't unregister receivers here - we need them while in background
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
         try {
             timerReceiver?.let { unregisterReceiver(it) }
             deviceStateReceiver?.let { unregisterReceiver(it) }
+            addLogEntry("📱 App destroyed")
         } catch (e: Exception) {
             android.util.Log.e("MainActivity", "Error unregistering receivers", e)
         }
@@ -147,8 +200,10 @@ class MainActivity : ComponentActivity() {
                 putExtra(TimerService.EXTRA_TIME_SECONDS, timeInSeconds)
             }
             startForegroundService(intent)
+            addLogEntry("🚀 Timer service started with ${timeInSeconds}s")
         } catch (e: Exception) {
             android.util.Log.e("MainActivity", "Error starting timer service", e)
+            addLogEntry("❌ Failed to start timer service")
         }
     }
 
@@ -158,8 +213,10 @@ class MainActivity : ComponentActivity() {
                 action = TimerService.ACTION_STOP_TIMER
             }
             startService(intent)
+            addLogEntry("🛑 Timer service stop requested")
         } catch (e: Exception) {
             android.util.Log.e("MainActivity", "Error stopping timer service", e)
+            addLogEntry("❌ Failed to stop timer service")
         }
     }
 }
@@ -227,11 +284,22 @@ fun TimerScreen(
         }
         Spacer(modifier = Modifier.height(24.dp))
         Text("Event Log:", fontWeight = FontWeight.Bold)
-        LazyColumn(modifier = Modifier.height(120.dp)) {
-            items(eventLog.take(10)) { event ->
-                Text(event)
+        LazyColumn(modifier = Modifier.height(200.dp)) {
+            items(eventLog) { event ->
+                Text(
+                    text = event,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(vertical = 2.dp)
+                )
             }
         }
+        
+        // Debug info
+        Text(
+            text = "Events: ${eventLog.size}",
+            fontSize = 10.sp,
+            modifier = Modifier.padding(top = 8.dp)
+        )
     }
 }
 

@@ -33,8 +33,10 @@ class ScreenStateReceiver : BroadcastReceiver() {
             Intent.ACTION_SCREEN_ON -> {
                 Log.d(TAG, "Screen turned ON - isLocked: $isLocked")
                 if (isLocked) {
+                    // Screen on but still locked (lock screen showing)
                     handleDeviceStateChange(context, true, true)
                 } else {
+                    // Screen on and unlocked
                     handleDeviceStateChange(context, false, true)
                 }
             }
@@ -54,6 +56,7 @@ class ScreenStateReceiver : BroadcastReceiver() {
     private fun handleDeviceStateChange(context: Context, isLocked: Boolean, isScreenOn: Boolean) {
         Log.d(TAG, "Device state - Locked: $isLocked, ScreenOn: $isScreenOn")
         
+        // Broadcast the state change to MainActivity
         val intent = Intent("com.changedtimer.DEVICE_STATE_CHANGED").apply {
             putExtra("is_locked", isLocked)
             putExtra("is_screen_on", isScreenOn)
@@ -61,9 +64,11 @@ class ScreenStateReceiver : BroadcastReceiver() {
         }
         context.sendBroadcast(intent)
         
+        // Get current available time from shared preferences
         val sharedPrefs = context.getSharedPreferences("TimerAppPrefs", Context.MODE_PRIVATE)
         val availableTime = sharedPrefs.getInt("available_time", 0)
         
+        // Check if app is in foreground
         val isAppInForeground = try {
             val clazz = Class.forName("com.changedtimer.AppLifecycleListener")
             val field = clazz.getDeclaredField("isAppInForeground")
@@ -74,10 +79,21 @@ class ScreenStateReceiver : BroadcastReceiver() {
             false
         }
         
-        val shouldTimerRun = !isLocked && availableTime > 0 && !isAppInForeground
+        // CORRECTED LOGIC:
+        // Timer should run when:
+        // 1. Phone is unlocked (!isLocked)
+        // 2. App is in background (!isAppInForeground) 
+        // 3. There is available time (availableTime > 0)
+        //
+        // Timer should pause when:
+        // 1. Phone is locked (isLocked) OR
+        // 2. App is in foreground (isAppInForeground) OR
+        // 3. No time left (availableTime <= 0)
+        
+        val shouldTimerRun = !isLocked && !isAppInForeground && availableTime > 0
         
         if (shouldTimerRun) {
-            Log.d(TAG, "Starting timer service - device unlocked, app in background, available time")
+            Log.d(TAG, "✅ STARTING timer - Phone unlocked, app in background, time available")
             val serviceIntent = Intent(context, TimerService::class.java).apply {
                 action = TimerService.ACTION_START_TIMER
             }
@@ -88,7 +104,14 @@ class ScreenStateReceiver : BroadcastReceiver() {
                 context.startService(serviceIntent)
             }
         } else {
-            Log.d(TAG, "Stopping timer service - device locked, no time, or app in foreground")
+            val reason = when {
+                isLocked -> "phone is locked"
+                isAppInForeground -> "app is in foreground"
+                availableTime <= 0 -> "no time available"
+                else -> "unknown reason"
+            }
+            Log.d(TAG, "⏸️ STOPPING timer - $reason")
+            
             val serviceIntent = Intent(context, TimerService::class.java).apply {
                 action = TimerService.ACTION_STOP_TIMER
             }

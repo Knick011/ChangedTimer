@@ -26,7 +26,7 @@ class TimerService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     
     private var availableTimeSeconds = 0
-    private var startTime = 0L
+    private var isTimerRunning = false
     
     companion object {
         private const val TAG = "TimerService"
@@ -53,7 +53,7 @@ class TimerService : Service() {
         
         acquireWakeLock()
         
-        Log.d(TAG, "TimerService created")
+        Log.d(TAG, "TimerService created with saved time: $availableTimeSeconds")
     }
 
     private fun acquireWakeLock() {
@@ -65,13 +65,17 @@ class TimerService : Service() {
                 setReferenceCounted(false)
                 acquire(10 * 60 * 1000L) // 10 minutes max
             }
+            Log.d(TAG, "Wake lock acquired")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to acquire wake lock", e)
         }
     }
     
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        val action = intent?.action
+        Log.d(TAG, "onStartCommand: $action")
+        
+        when (action) {
             ACTION_START_TIMER -> {
                 startTimer()
             }
@@ -91,6 +95,7 @@ class TimerService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        Log.d(TAG, "TimerService destroyed")
         releaseWakeLock()
         stopTimer()
     }
@@ -100,6 +105,7 @@ class TimerService : Service() {
             wakeLock?.let {
                 if (it.isHeld) {
                     it.release()
+                    Log.d(TAG, "Wake lock released")
                 }
             }
             wakeLock = null
@@ -121,25 +127,35 @@ class TimerService : Service() {
             
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.createNotificationChannel(channel)
+            Log.d(TAG, "Notification channel created")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to create notification channel", e)
         }
     }
     
     private fun startTimer() {
-        if (timerRunnable != null) return
+        if (isTimerRunning) {
+            Log.d(TAG, "Timer already running, ignoring start request")
+            return
+        }
         
-        Log.d(TAG, "Starting background timer")
-        startTime = System.currentTimeMillis()
+        if (availableTimeSeconds <= 0) {
+            Log.d(TAG, "No time available, cannot start timer")
+            broadcastTimerUpdate("time_expired")
+            return
+        }
+        
+        Log.d(TAG, "Starting background timer with ${availableTimeSeconds}s remaining")
+        isTimerRunning = true
         
         try {
-            val notification = createNotification("Timer Started", "Background timer is running")
+            val notification = createNotification("Timer Running", "Time remaining: ${formatTime(availableTimeSeconds)}")
             startForeground(NOTIFICATION_ID, notification)
             
             timerRunnable = object : Runnable {
                 override fun run() {
-                    tick()
-                    if (availableTimeSeconds > 0) {
+                    if (isTimerRunning && availableTimeSeconds > 0) {
+                        tick()
                         handler.postDelayed(this, 1000)
                     }
                 }
@@ -147,6 +163,8 @@ class TimerService : Service() {
             
             handler.post(timerRunnable!!)
             broadcastTimerUpdate("timer_started")
+            
+            Log.d(TAG, "Timer started successfully")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start timer", e)
             stopTimer()
@@ -154,11 +172,19 @@ class TimerService : Service() {
     }
     
     private fun stopTimer() {
+        if (!isTimerRunning) {
+            Log.d(TAG, "Timer not running, ignoring stop request")
+            return
+        }
+        
         Log.d(TAG, "Stopping background timer")
+        isTimerRunning = false
+        
         timerRunnable?.let {
             handler.removeCallbacks(it)
             timerRunnable = null
         }
+        
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(Service.STOP_FOREGROUND_REMOVE)
@@ -166,27 +192,29 @@ class TimerService : Service() {
                 @Suppress("DEPRECATION")
                 stopForeground(true)
             }
+            Log.d(TAG, "Stopped foreground service")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to stop foreground service", e)
         }
+        
         broadcastTimerUpdate("timer_stopped")
     }
     
     private fun tick() {
-        if (availableTimeSeconds > 0) {
-            availableTimeSeconds--
-            saveTime()
-            
-            if (availableTimeSeconds % 30 == 0) {
-                updateNotification()
-            }
-            
-            if (availableTimeSeconds <= 0) {
-                handleTimeExpired()
-            }
-            
-            broadcastTimerUpdate("time_tick")
-        } else {
+        availableTimeSeconds--
+        saveTime()
+        
+        Log.v(TAG, "Tick: ${availableTimeSeconds}s remaining")
+        
+        // Update notification every 30 seconds
+        if (availableTimeSeconds % 30 == 0) {
+            updateNotification()
+        }
+        
+        // Broadcast every second for UI updates
+        broadcastTimerUpdate("time_tick")
+        
+        if (availableTimeSeconds <= 0) {
             handleTimeExpired()
         }
     }
@@ -194,14 +222,16 @@ class TimerService : Service() {
     private fun handleTimeExpired() {
         Log.d(TAG, "Time expired!")
         stopTimer()
+        
         try {
             val notification = NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_dialog_alert)
-                .setContentTitle("\u23F0 Time Expired!")
+                .setContentTitle("⏰ Time Expired!")
                 .setContentText("Your screen time has run out!")
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setAutoCancel(true)
                 .build()
+                
             try {
                 if (Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(this, "android.permission.POST_NOTIFICATIONS") == PackageManager.PERMISSION_GRANTED) {
                     notificationManager.notify(999, notification)
@@ -214,6 +244,7 @@ class TimerService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to show time expired notification", e)
         }
+        
         broadcastTimerUpdate("time_expired")
     }
     
@@ -221,6 +252,7 @@ class TimerService : Service() {
         try {
             val timeText = formatTime(availableTimeSeconds)
             val notification = createNotification("Timer Running", "Time remaining: $timeText")
+            
             try {
                 if (Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(this, "android.permission.POST_NOTIFICATIONS") == PackageManager.PERMISSION_GRANTED) {
                     notificationManager.notify(NOTIFICATION_ID, notification)
@@ -253,18 +285,24 @@ class TimerService : Service() {
     }
     
     private fun updateAvailableTime(newTime: Int) {
+        Log.d(TAG, "Updating available time from ${availableTimeSeconds}s to ${newTime}s")
         availableTimeSeconds = newTime
         saveTime()
         
-        if (availableTimeSeconds > 0 && timerRunnable == null) {
-            startTimer()
-        } else if (availableTimeSeconds <= 0 && timerRunnable != null) {
+        // Always broadcast the time update
+        broadcastTimerUpdate("time_tick")
+        
+        if (availableTimeSeconds > 0 && !isTimerRunning) {
+            Log.d(TAG, "Time available and timer not running - ready to start when conditions met")
+        } else if (availableTimeSeconds <= 0 && isTimerRunning) {
+            Log.d(TAG, "No time left - stopping timer")
             stopTimer()
         }
     }
     
     private fun loadSavedTime() {
         availableTimeSeconds = sharedPrefs.getInt(KEY_AVAILABLE_TIME, 0)
+        Log.d(TAG, "Loaded saved time: ${availableTimeSeconds}s")
     }
     
     private fun saveTime() {
@@ -274,8 +312,10 @@ class TimerService : Service() {
     private fun broadcastTimerUpdate(action: String) {
         val intent = Intent(action).apply {
             putExtra("time_remaining", availableTimeSeconds)
+            putExtra("is_timer_running", isTimerRunning)
         }
         sendBroadcast(intent)
+        Log.v(TAG, "Broadcast sent: $action (time: ${availableTimeSeconds}s, running: $isTimerRunning)")
     }
     
     private fun formatTime(seconds: Int): String {
