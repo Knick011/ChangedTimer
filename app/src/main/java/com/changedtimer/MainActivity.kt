@@ -31,59 +31,80 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        sharedPrefs = getSharedPreferences("TimerAppPrefs", Context.MODE_PRIVATE)
-        _remainingTime.value = sharedPrefs.getInt("available_time", 0)
-        setContent {
-            ChangedTimerTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    TimerScreen(
-                        onStartTimer = { timeInSeconds ->
-                            startTimerService(timeInSeconds)
-                        },
-                        onStopTimer = {
-                            stopTimerService()
-                        },
-                        remainingTime = _remainingTime.value,
-                        timerStatus = _timerStatus.value,
-                        eventLog = _eventLog.value
-                    )
+        
+        try {
+            sharedPrefs = getSharedPreferences("TimerAppPrefs", Context.MODE_PRIVATE)
+            _remainingTime.value = sharedPrefs.getInt("available_time", 0)
+            
+            setContent {
+                ChangedTimerTheme {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.background
+                    ) {
+                        TimerScreen(
+                            onStartTimer = { timeInSeconds ->
+                                startTimerService(timeInSeconds)
+                            },
+                            onStopTimer = {
+                                stopTimerService()
+                            },
+                            remainingTime = _remainingTime.value,
+                            timerStatus = _timerStatus.value,
+                            eventLog = _eventLog.value
+                        )
+                    }
                 }
             }
+        } catch (e: Exception) {
+            // Log the error but don't crash
+            android.util.Log.e("MainActivity", "Error in onCreate", e)
         }
     }
 
     override fun onStart() {
         super.onStart()
+        
+        try {
+            setupReceivers()
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Error setting up receivers", e)
+        }
+    }
+
+    private fun setupReceivers() {
         timerReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
-                when (intent?.action) {
-                    "timer_started" -> {
-                        _timerStatus.value = "Timer Running (Background)"
-                        _eventLog.value = listOf("Timer started") + _eventLog.value
+                try {
+                    when (intent?.action) {
+                        "timer_started" -> {
+                            _timerStatus.value = "Timer Running (Background)"
+                            _eventLog.value = listOf("Timer started") + _eventLog.value
+                        }
+                        "timer_stopped" -> {
+                            _timerStatus.value = "Timer Stopped"
+                            _eventLog.value = listOf("Timer stopped") + _eventLog.value
+                        }
+                        "time_tick" -> {
+                            val time = intent.getIntExtra("time_remaining", 0)
+                            _remainingTime.value = time
+                        }
+                        "time_expired" -> {
+                            _timerStatus.value = "Time Expired"
+                            _eventLog.value = listOf("Time expired") + _eventLog.value
+                            _remainingTime.value = 0
+                        }
                     }
-                    "timer_stopped" -> {
-                        _timerStatus.value = "Timer Stopped"
-                        _eventLog.value = listOf("Timer stopped") + _eventLog.value
+                    // Always update remaining time if present
+                    intent?.getIntExtra("time_remaining", -1)?.let { t ->
+                        if (t >= 0) _remainingTime.value = t
                     }
-                    "time_tick" -> {
-                        val time = intent.getIntExtra("time_remaining", 0)
-                        _remainingTime.value = time
-                    }
-                    "time_expired" -> {
-                        _timerStatus.value = "Time Expired"
-                        _eventLog.value = listOf("Time expired") + _eventLog.value
-                        _remainingTime.value = 0
-                    }
-                }
-                // Always update remaining time if present
-                intent?.getIntExtra("time_remaining", -1)?.let { t ->
-                    if (t >= 0) _remainingTime.value = t
+                } catch (e: Exception) {
+                    android.util.Log.e("MainActivity", "Error in timer receiver", e)
                 }
             }
         }
+        
         val filter = IntentFilter().apply {
             addAction("timer_started")
             addAction("timer_stopped")
@@ -94,35 +115,52 @@ class MainActivity : ComponentActivity() {
 
         deviceStateReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
-                val isLocked = intent?.getBooleanExtra("is_locked", false) ?: false
-                val isScreenOn = intent?.getBooleanExtra("is_screen_on", false) ?: false
-                val stateMsg = if (isLocked) "Device Locked" else if (isScreenOn) "Device Unlocked" else "Screen Off"
-                _eventLog.value = listOf(stateMsg) + _eventLog.value
+                try {
+                    val isLocked = intent?.getBooleanExtra("is_locked", false) ?: false
+                    val isScreenOn = intent?.getBooleanExtra("is_screen_on", false) ?: false
+                    val stateMsg = if (isLocked) "Device Locked" else if (isScreenOn) "Device Unlocked" else "Screen Off"
+                    _eventLog.value = listOf(stateMsg) + _eventLog.value
+                } catch (e: Exception) {
+                    android.util.Log.e("MainActivity", "Error in device state receiver", e)
+                }
             }
         }
+        
         val deviceFilter = IntentFilter("com.changedtimer.DEVICE_STATE_CHANGED")
         registerReceiver(deviceStateReceiver, deviceFilter)
     }
 
     override fun onStop() {
         super.onStop()
-        timerReceiver?.let { unregisterReceiver(it) }
-        deviceStateReceiver?.let { unregisterReceiver(it) }
+        try {
+            timerReceiver?.let { unregisterReceiver(it) }
+            deviceStateReceiver?.let { unregisterReceiver(it) }
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Error unregistering receivers", e)
+        }
     }
 
     private fun startTimerService(timeInSeconds: Int) {
-        val intent = Intent(this, TimerService::class.java).apply {
-            action = TimerService.ACTION_UPDATE_TIME
-            putExtra(TimerService.EXTRA_TIME_SECONDS, timeInSeconds)
+        try {
+            val intent = Intent(this, TimerService::class.java).apply {
+                action = TimerService.ACTION_UPDATE_TIME
+                putExtra(TimerService.EXTRA_TIME_SECONDS, timeInSeconds)
+            }
+            startForegroundService(intent)
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Error starting timer service", e)
         }
-        startForegroundService(intent)
     }
 
     private fun stopTimerService() {
-        val intent = Intent(this, TimerService::class.java).apply {
-            action = TimerService.ACTION_STOP_TIMER
+        try {
+            val intent = Intent(this, TimerService::class.java).apply {
+                action = TimerService.ACTION_STOP_TIMER
+            }
+            startService(intent)
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Error stopping timer service", e)
         }
-        startService(intent)
     }
 }
 
@@ -130,9 +168,9 @@ class MainActivity : ComponentActivity() {
 fun TimerScreen(
     onStartTimer: (Int) -> Unit,
     onStopTimer: () -> Unit,
-    remainingTime: Int = 0,
-    timerStatus: String = "Timer Stopped",
-    eventLog: List<String> = emptyList()
+    remainingTime: Int,
+    timerStatus: String,
+    eventLog: List<String>
 ) {
     var timeInput by remember { mutableStateOf("") }
     var isTimerRunning by remember { mutableStateOf(false) }

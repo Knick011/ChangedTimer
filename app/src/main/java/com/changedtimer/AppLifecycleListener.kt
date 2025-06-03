@@ -8,6 +8,7 @@ import android.content.Intent
 
 class AppLifecycleListener : Application.ActivityLifecycleCallbacks {
     companion object {
+        @JvmStatic
         var isAppInForeground: Boolean = false
     }
 
@@ -15,14 +16,18 @@ class AppLifecycleListener : Application.ActivityLifecycleCallbacks {
     private var isActivityChangingConfigurations = false
 
     override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+    
     override fun onActivityStarted(activity: Activity) {
         if (++activityReferences == 1 && !isActivityChangingConfigurations) {
             isAppInForeground = true
             broadcastAppState(activity.applicationContext, true)
         }
     }
+    
     override fun onActivityResumed(activity: Activity) {}
+    
     override fun onActivityPaused(activity: Activity) {}
+    
     override fun onActivityStopped(activity: Activity) {
         isActivityChangingConfigurations = activity.isChangingConfigurations
         if (--activityReferences == 0 && !isActivityChangingConfigurations) {
@@ -30,7 +35,9 @@ class AppLifecycleListener : Application.ActivityLifecycleCallbacks {
             broadcastAppState(activity.applicationContext, false)
         }
     }
+    
     override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+    
     override fun onActivityDestroyed(activity: Activity) {}
 
     private fun broadcastAppState(context: Context, isForeground: Boolean) {
@@ -40,7 +47,7 @@ class AppLifecycleListener : Application.ActivityLifecycleCallbacks {
         context.sendBroadcast(intent)
 
         // Also trigger ScreenStateReceiver logic
-        val screenStateIntent = Intent(context, ScreenStateReceiver::class.java)
+        val screenStateIntent = Intent("com.changedtimer.APP_STATE_CHANGED")
         context.sendBroadcast(screenStateIntent)
     }
-} 
+}

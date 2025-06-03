@@ -1,32 +1,86 @@
-[versions]
-agp = "8.2.2"
-kotlin = "1.9.22"
-compose-compiler = "1.5.8"
-coreKtx = "1.12.0"
-junit = "4.13.2"
-junitVersion = "1.1.5"
-espressoCore = "3.5.1"
-lifecycleRuntimeKtx = "2.7.0"
-activityCompose = "1.8.2"
-composeBom = "2024.02.00"
+package com.changedtimer
 
-[libraries]
-androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
-junit = { group = "junit", name = "junit", version.ref = "junit" }
-androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
-androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
-androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
-androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
-androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
-androidx-ui = { group = "androidx.compose.ui", name = "ui" }
-androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
-androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
-androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
-androidx-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
-androidx-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
-androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
+import android.app.KeyguardManager
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import android.os.PowerManager
+import android.util.Log
 
-[plugins]
-android-application = { id = "com.android.application", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
-kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+class BootReceiver : BroadcastReceiver() {
+    
+    companion object {
+        private const val TAG = "BootReceiver"
+    }
+    
+    override fun onReceive(context: Context, intent: Intent) {
+        try {
+            val intentAction = intent.action
+            Log.d(TAG, "Received action: $intentAction")
+            
+            when (intentAction) {
+                Intent.ACTION_BOOT_COMPLETED,
+                Intent.ACTION_MY_PACKAGE_REPLACED,
+                Intent.ACTION_PACKAGE_REPLACED -> {
+                    handleBootOrUpdate(context)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in BootReceiver", e)
+        }
+    }
+
+    private fun handleBootOrUpdate(context: Context) {
+        try {
+            Log.d(TAG, "Device booted or app updated - checking timer state")
+            
+            val sharedPrefs = context.getSharedPreferences("TimerAppPrefs", Context.MODE_PRIVATE)
+            val availableTime = sharedPrefs.getInt("available_time", 0)
+            
+            if (availableTime > 0) {
+                Log.d(TAG, "Found saved time: $availableTime seconds")
+                
+                val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                val keyguardManager = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+                
+                if (powerManager != null && keyguardManager != null) {
+                    val isScreenOn = powerManager.isInteractive
+                    val isLocked = keyguardManager.isKeyguardLocked
+                    
+                    Log.d(TAG, "Device state - ScreenOn: $isScreenOn, Locked: $isLocked")
+                    
+                    if (isScreenOn && !isLocked) {
+                        startTimerService(context, availableTime)
+                    } else {
+                        Log.d(TAG, "Device is locked - timer will start when unlocked")
+                    }
+                } else {
+                    Log.e(TAG, "Failed to get system services")
+                }
+            } else {
+                Log.d(TAG, "No saved time found - timer will not start")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling boot or update", e)
+        }
+    }
+
+    private fun startTimerService(context: Context, availableTime: Int) {
+        try {
+            Log.d(TAG, "Starting timer service - device is unlocked")
+            val serviceIntent = Intent(context, TimerService::class.java).apply {
+                action = TimerService.ACTION_UPDATE_TIME
+                putExtra(TimerService.EXTRA_TIME_SECONDS, availableTime)
+            }
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(serviceIntent)
+            } else {
+                context.startService(serviceIntent)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start timer service", e)
+        }
+    }
+}

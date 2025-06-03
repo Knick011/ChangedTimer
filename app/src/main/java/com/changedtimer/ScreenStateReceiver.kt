@@ -33,10 +33,8 @@ class ScreenStateReceiver : BroadcastReceiver() {
             Intent.ACTION_SCREEN_ON -> {
                 Log.d(TAG, "Screen turned ON - isLocked: $isLocked")
                 if (isLocked) {
-                    // Screen on but still locked
                     handleDeviceStateChange(context, true, true)
                 } else {
-                    // Screen on and unlocked
                     handleDeviceStateChange(context, false, true)
                 }
             }
@@ -45,6 +43,7 @@ class ScreenStateReceiver : BroadcastReceiver() {
                 Log.d(TAG, "User dismissed keyguard - Device unlocked")
                 handleDeviceStateChange(context, false, true)
             }
+            
             "com.changedtimer.APP_STATE_CHANGED" -> {
                 Log.d(TAG, "App foreground/background state changed")
                 handleDeviceStateChange(context, isLocked, isScreenOn)
@@ -55,7 +54,6 @@ class ScreenStateReceiver : BroadcastReceiver() {
     private fun handleDeviceStateChange(context: Context, isLocked: Boolean, isScreenOn: Boolean) {
         Log.d(TAG, "Device state - Locked: $isLocked, ScreenOn: $isScreenOn")
         
-        // Broadcast the state change to MainActivity
         val intent = Intent("com.changedtimer.DEVICE_STATE_CHANGED").apply {
             putExtra("is_locked", isLocked)
             putExtra("is_screen_on", isScreenOn)
@@ -63,11 +61,9 @@ class ScreenStateReceiver : BroadcastReceiver() {
         }
         context.sendBroadcast(intent)
         
-        // Get current available time from shared preferences
         val sharedPrefs = context.getSharedPreferences("TimerAppPrefs", Context.MODE_PRIVATE)
         val availableTime = sharedPrefs.getInt("available_time", 0)
         
-        // Check if app is in foreground
         val isAppInForeground = try {
             val clazz = Class.forName("com.changedtimer.AppLifecycleListener")
             val field = clazz.getDeclaredField("isAppInForeground")
@@ -78,7 +74,6 @@ class ScreenStateReceiver : BroadcastReceiver() {
             false
         }
         
-        // Determine if timer should run
         val shouldTimerRun = !isLocked && availableTime > 0 && !isAppInForeground
         
         if (shouldTimerRun) {
@@ -87,7 +82,6 @@ class ScreenStateReceiver : BroadcastReceiver() {
                 action = TimerService.ACTION_START_TIMER
             }
             
-            // Fix: Check API level before using startForegroundService
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(serviceIntent)
             } else {
