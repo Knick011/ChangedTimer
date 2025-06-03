@@ -86,6 +86,8 @@ class ScreenStateReceiver : BroadcastReceiver() {
             val serviceIntent = Intent(context, TimerService::class.java).apply {
                 action = TimerService.ACTION_START_TIMER
             }
+            
+            // Fix: Check API level before using startForegroundService
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(serviceIntent)
             } else {
