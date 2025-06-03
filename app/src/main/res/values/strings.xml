@@ -1,0 +1,27 @@
+<resources>
+    <string name="app_name">Changed Timer</string>
+    <string name="time_display_default">0:00</string>
+    <string name="available_time_label">Available Time</string>
+    <string name="status_foreground">FOREGROUND</string>
+    <string name="status_background">BACKGROUND</string>
+    <string name="status_locked">LOCKED</string>
+    <string name="status_unlocked">UNLOCKED</string>
+    <string name="timer_running">RUNNING</string>
+    <string name="timer_stopped">STOPPED</string>
+    <string name="quick_actions_title">Quick Actions</string>
+    <string name="add_30s">➕ +30s</string>
+    <string name="add_5min">➕ +5min</string>
+    <string name="remove_30s">➖ -30s</string>
+    <string name="test_background">🧪 Test Background</string>
+    <string name="reset">🔄 Reset</string>
+    <string name="event_log_title">Event Log</string>
+    <string name="clear_log">Clear</string>
+    <string name="no_events">No events yet...</string>
+    <string name="how_to_test_title">🧪 How to Test</string>
+    <string name="instructions">1. Tap \'Test Background\' to add 30 seconds\n2. Press home button to minimize the app\n3. Wait 10-20 seconds\n4. Return to the app\n5. Check if time was deducted in the log\n\nThe timer should track time spent outside the app and deduct it from your available time.</string>
+    <string name="time_expired_title">⌛ Time Expired!</string>
+    <string name="time_expired_message">Your screen time has run out!</string>
+    <string name="timer_notification_title">⏱️ Timer Running</string>
+    <string name="time_remaining_format">Time remaining: %s</string>
+    <string name="test_message">30s added. Now minimize the app to test!</string>
+</resources>
