@@ -16,299 +16,275 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import androidx.core.content.ContextCompat
 import com.changedtimer.ui.theme.ChangedTimerTheme
+import android.util.Log
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.result.contract.ActivityResultContracts
 
 class MainActivity : ComponentActivity() {
     private lateinit var sharedPrefs: SharedPreferences
     private var timerReceiver: BroadcastReceiver? = null
-    private var deviceStateReceiver: BroadcastReceiver? = null
 
     private val _remainingTime = mutableStateOf(0)
-    private val _timerStatus = mutableStateOf("Timer Stopped")
-    private val _eventLog = mutableStateOf(listOf<String>())
+    private val _isAppForeground = mutableStateOf(false)
+
+    companion object {
+        private const val TAG = "MainActivity"
+    }
+
+    // Permission launcher for notifications
+    private val requestPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            Log.d(TAG, "Notification permission granted")
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        try {
-            sharedPrefs = getSharedPreferences("TimerAppPrefs", Context.MODE_PRIVATE)
-            _remainingTime.value = sharedPrefs.getInt("available_time", 0)
-            
-            // Add initial log entry
-            addLogEntry("📱 App started")
-            
-            setContent {
-                ChangedTimerTheme {
-                    Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        color = MaterialTheme.colorScheme.background
-                    ) {
-                        TimerScreen(
-                            onStartTimer = { timeInSeconds ->
-                                startTimerService(timeInSeconds)
-                            },
-                            onStopTimer = {
-                                stopTimerService()
-                            },
-                            remainingTime = _remainingTime.value,
-                            timerStatus = _timerStatus.value,
-                            eventLog = _eventLog.value
-                        )
-                    }
+        sharedPrefs = getSharedPreferences("TimerAppPrefs", Context.MODE_PRIVATE)
+        _remainingTime.value = sharedPrefs.getInt("remaining_time", 0)
+        
+        // Request notification permission for Android 13+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+        
+        setContent {
+            ChangedTimerTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    ScreenTimeTracker(
+                        remainingTime = _remainingTime.value,
+                        isAppForeground = _isAppForeground.value,
+                        onSetTime = { minutes ->
+                            setScreenTime(minutes)
+                        }
+                    )
                 }
             }
-        } catch (e: Exception) {
-            android.util.Log.e("MainActivity", "Error in onCreate", e)
         }
     }
 
     override fun onStart() {
         super.onStart()
+        setupReceiver()
         
-        try {
-            setupReceivers()
-            addLogEntry("📱 App resumed/started")
-        } catch (e: Exception) {
-            android.util.Log.e("MainActivity", "Error setting up receivers", e)
+        // Notify service that app is in foreground
+        Intent(this, TimerService::class.java).apply {
+            action = TimerService.ACTION_APP_FOREGROUND
+            startService(this)
         }
-    }
-
-    private fun addLogEntry(message: String) {
-        val timestamp = System.currentTimeMillis() % 100000
-        val entry = "$timestamp: $message"
-        _eventLog.value = listOf(entry) + _eventLog.value.take(9)
-        android.util.Log.d("MainActivity", "Event: $entry")
-    }
-
-    private fun setupReceivers() {
-        // Unregister any existing receivers first
-        try {
-            timerReceiver?.let { unregisterReceiver(it) }
-            deviceStateReceiver?.let { unregisterReceiver(it) }
-        } catch (e: Exception) {
-            // Ignore if already unregistered
-        }
-
-        // Timer broadcast receiver
-        timerReceiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                try {
-                    android.util.Log.d("MainActivity", "Timer broadcast received: ${intent?.action}")
-                    
-                    when (intent?.action) {
-                        "timer_started" -> {
-                            _timerStatus.value = "⏱️ Timer RUNNING (Background Usage)"
-                            addLogEntry("⏱️ Timer Started")
-                        }
-                        "timer_stopped" -> {
-                            _timerStatus.value = "⏸️ Timer PAUSED"
-                            addLogEntry("⏸️ Timer Paused")
-                        }
-                        "time_tick" -> {
-                            val time = intent.getIntExtra("time_remaining", 0)
-                            _remainingTime.value = time
-                            // Don't log every tick, too noisy
-                        }
-                        "time_expired" -> {
-                            _timerStatus.value = "❌ Time Expired!"
-                            addLogEntry("❌ Time Expired!")
-                            _remainingTime.value = 0
-                        }
-                    }
-                    
-                    // Always update remaining time if present
-                    intent?.getIntExtra("time_remaining", -1)?.let { t ->
-                        if (t >= 0) _remainingTime.value = t
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.e("MainActivity", "Error in timer receiver", e)
-                }
-            }
-        }
-        
-        val timerFilter = IntentFilter().apply {
-            addAction("timer_started")
-            addAction("timer_stopped")
-            addAction("time_tick")
-            addAction("time_expired")
-        }
-        
-        // Use RECEIVER_NOT_EXPORTED for Android 13+
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.registerReceiver(this, timerReceiver, timerFilter, ContextCompat.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(timerReceiver, timerFilter)
-        }
-
-        // Device state broadcast receiver
-        deviceStateReceiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                try {
-                    android.util.Log.d("MainActivity", "Device state broadcast received")
-                    
-                    val isLocked = intent?.getBooleanExtra("is_locked", false) ?: false
-                    val isScreenOn = intent?.getBooleanExtra("is_screen_on", false) ?: false
-                    
-                    val stateMsg = when {
-                        isLocked -> "🔒 Device Locked - Timer Paused"
-                        !isScreenOn -> "📱 Screen Off - Timer Paused" 
-                        else -> "🔓 Device Unlocked - Timer Ready"
-                    }
-                    
-                    addLogEntry(stateMsg)
-                } catch (e: Exception) {
-                    android.util.Log.e("MainActivity", "Error in device state receiver", e)
-                }
-            }
-        }
-        
-        val deviceFilter = IntentFilter("com.changedtimer.DEVICE_STATE_CHANGED")
-        
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.registerReceiver(this, deviceStateReceiver, deviceFilter, ContextCompat.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(deviceStateReceiver, deviceFilter)
-        }
-
-        addLogEntry("📡 Receivers registered")
     }
 
     override fun onStop() {
         super.onStop()
-        addLogEntry("🏠 App going to background")
-        // Don't unregister receivers here - we need them while in background
+        
+        // Notify service that app is in background
+        Intent(this, TimerService::class.java).apply {
+            action = TimerService.ACTION_APP_BACKGROUND
+            startService(this)
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        try {
-            timerReceiver?.let { unregisterReceiver(it) }
-            deviceStateReceiver?.let { unregisterReceiver(it) }
-            addLogEntry("📱 App destroyed")
-        } catch (e: Exception) {
-            android.util.Log.e("MainActivity", "Error unregistering receivers", e)
-        }
+        timerReceiver?.let { unregisterReceiver(it) }
     }
 
-    private fun startTimerService(timeInSeconds: Int) {
-        try {
-            val intent = Intent(this, TimerService::class.java).apply {
-                action = TimerService.ACTION_UPDATE_TIME
-                putExtra(TimerService.EXTRA_TIME_SECONDS, timeInSeconds)
-            }
-            startForegroundService(intent)
-            addLogEntry("🚀 Timer service started with ${timeInSeconds}s")
-        } catch (e: Exception) {
-            android.util.Log.e("MainActivity", "Error starting timer service", e)
-            addLogEntry("❌ Failed to start timer service")
+    private fun setupReceiver() {
+        timerReceiver?.let { 
+            try { unregisterReceiver(it) } catch (e: Exception) { }
         }
+
+        timerReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                intent?.let {
+                    _remainingTime.value = it.getIntExtra("remaining_time", 0)
+                    _isAppForeground.value = it.getBooleanExtra("is_app_foreground", false)
+                }
+            }
+        }
+        
+        val filter = IntentFilter("timer_update")
+        ContextCompat.registerReceiver(
+            this, 
+            timerReceiver, 
+            filter, 
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
     }
 
-    private fun stopTimerService() {
-        try {
-            val intent = Intent(this, TimerService::class.java).apply {
-                action = TimerService.ACTION_STOP_TIMER
-            }
-            startService(intent)
-            addLogEntry("🛑 Timer service stop requested")
-        } catch (e: Exception) {
-            android.util.Log.e("MainActivity", "Error stopping timer service", e)
-            addLogEntry("❌ Failed to stop timer service")
+    private fun setScreenTime(minutes: Int) {
+        val seconds = minutes * 60
+        
+        // Start or update the timer service
+        Intent(this, TimerService::class.java).apply {
+            action = TimerService.ACTION_UPDATE_TIME
+            putExtra(TimerService.EXTRA_TIME_SECONDS, seconds)
+            startForegroundService(this)
         }
+        
+        Log.d(TAG, "Set screen time to $minutes minutes ($seconds seconds)")
     }
 }
 
 @Composable
-fun TimerScreen(
-    onStartTimer: (Int) -> Unit,
-    onStopTimer: () -> Unit,
+fun ScreenTimeTracker(
     remainingTime: Int,
-    timerStatus: String,
-    eventLog: List<String>
+    isAppForeground: Boolean,
+    onSetTime: (Int) -> Unit
 ) {
-    var timeInput by remember { mutableStateOf("") }
-    var isTimerRunning by remember { mutableStateOf(false) }
-
+    var inputMinutes by remember { mutableStateOf("") }
+    
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
+        // App Title
         Text(
-            text = formatTime(remainingTime),
-            fontSize = 48.sp,
+            text = "Screen Time Tracker",
+            fontSize = 28.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(bottom = 8.dp)
         )
+        
         Text(
-            text = timerStatus,
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.padding(bottom = 16.dp)
+            text = "Simple • Effective • Automatic",
+            fontSize = 14.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 32.dp)
         )
-        OutlinedTextField(
-            value = timeInput,
-            onValueChange = { timeInput = it },
-            label = { Text("Time in minutes") },
-            enabled = !isTimerRunning,
-            modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        Button(
-            onClick = {
-                val minutes = timeInput.toIntOrNull() ?: 0
-                if (minutes > 0) {
-                    onStartTimer(minutes * 60)
-                    isTimerRunning = true
-                }
-            },
-            enabled = !isTimerRunning && timeInput.isNotEmpty()
+        
+        // Time Display Card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 24.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (remainingTime > 0) 
+                    MaterialTheme.colorScheme.primaryContainer 
+                else 
+                    MaterialTheme.colorScheme.errorContainer
+            )
         ) {
-            Text("Start Timer")
-        }
-        if (isTimerRunning) {
-            Spacer(modifier = Modifier.height(8.dp))
-            Button(
-                onClick = {
-                    onStopTimer()
-                    isTimerRunning = false
-                }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text("Stop Timer")
-            }
-        }
-        Spacer(modifier = Modifier.height(24.dp))
-        Text("Event Log:", fontWeight = FontWeight.Bold)
-        LazyColumn(modifier = Modifier.height(200.dp)) {
-            items(eventLog) { event ->
                 Text(
-                    text = event,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(vertical = 2.dp)
+                    text = formatTime(remainingTime),
+                    fontSize = 48.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (remainingTime > 0)
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    else
+                        MaterialTheme.colorScheme.onErrorContainer
+                )
+                
+                Text(
+                    text = when {
+                        remainingTime <= 0 -> "Time Expired!"
+                        isAppForeground -> "Paused (App Open)"
+                        else -> "Tracking Screen Time"
+                    },
+                    fontSize = 16.sp,
+                    modifier = Modifier.padding(top = 8.dp)
                 )
             }
         }
         
-        // Debug info
-        Text(
-            text = "Events: ${eventLog.size}",
-            fontSize = 10.sp,
-            modifier = Modifier.padding(top = 8.dp)
+        // Input Section
+        OutlinedTextField(
+            value = inputMinutes,
+            onValueChange = { 
+                // Only allow numeric input
+                if (it.all { char -> char.isDigit() }) {
+                    inputMinutes = it
+                }
+            },
+            label = { Text("Set Timer (minutes)") },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp),
+            singleLine = true
         )
+        
+        Button(
+            onClick = {
+                val minutes = inputMinutes.toIntOrNull() ?: 0
+                if (minutes > 0) {
+                    onSetTime(minutes)
+                    inputMinutes = ""
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = inputMinutes.isNotEmpty()
+        ) {
+            Text("Start Timer", fontSize = 16.sp)
+        }
+        
+        Spacer(modifier = Modifier.height(32.dp))
+        
+        // Info Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.secondaryContainer
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp)
+            ) {
+                Text(
+                    text = "How it works:",
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+                
+                Text(
+                    text = "• Timer counts down when screen is ON\n" +
+                          "• Timer pauses when this app is open\n" +
+                          "• Time spent in app is added back\n" +
+                          "• Check notification for live updates",
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp
+                )
+            }
+        }
     }
 }
 
 fun formatTime(seconds: Int): String {
     val hours = seconds / 3600
     val minutes = (seconds % 3600) / 60
-    val remainingSeconds = seconds % 60
+    val secs = seconds % 60
+    
     return when {
-        hours > 0 -> String.format("%02d:%02d:%02d", hours, minutes, remainingSeconds)
-        else -> String.format("%02d:%02d", minutes, remainingSeconds)
+        hours > 0 -> String.format("%d:%02d:%02d", hours, minutes, secs)
+        else -> String.format("%d:%02d", minutes, secs)
     }
 }

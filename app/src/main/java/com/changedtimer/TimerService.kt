@@ -11,33 +11,39 @@ import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
-import android.content.pm.PackageManager
-import androidx.core.content.ContextCompat
+import android.widget.RemoteViews
+import java.text.SimpleDateFormat
+import java.util.*
 
 class TimerService : Service() {
     
     private lateinit var powerManager: PowerManager
     private lateinit var sharedPrefs: SharedPreferences
-    private lateinit var notificationManager: NotificationManagerCompat
+    private lateinit var notificationManager: NotificationManager
     
     private val handler = Handler(Looper.getMainLooper())
     private var timerRunnable: Runnable? = null
     private var wakeLock: PowerManager.WakeLock? = null
     
-    private var availableTimeSeconds = 0
-    private var isTimerRunning = false
+    private var remainingTimeSeconds = 0
+    private var appForegroundStartTime = 0L
+    private var isAppInForeground = false
+    
+    // Event log for the notification
+    private val eventLog = mutableListOf<String>()
+    private val maxLogEntries = 5
     
     companion object {
         private const val TAG = "TimerService"
-        private const val NOTIFICATION_ID = 2
-        private const val CHANNEL_ID = "timer_service_channel"
+        private const val NOTIFICATION_ID = 1
+        private const val CHANNEL_ID = "screen_time_channel"
         private const val PREFS_NAME = "TimerAppPrefs"
-        private const val KEY_AVAILABLE_TIME = "available_time"
+        private const val KEY_REMAINING_TIME = "remaining_time"
         
-        const val ACTION_START_TIMER = "start_timer"
-        const val ACTION_STOP_TIMER = "stop_timer"
         const val ACTION_UPDATE_TIME = "update_time"
+        const val ACTION_STOP_SERVICE = "stop_service"
+        const val ACTION_APP_FOREGROUND = "app_foreground"
+        const val ACTION_APP_BACKGROUND = "app_background"
         const val EXTRA_TIME_SECONDS = "time_seconds"
     }
     
@@ -46,14 +52,14 @@ class TimerService : Service() {
         
         powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         sharedPrefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        notificationManager = NotificationManagerCompat.from(this)
+        notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         
         createNotificationChannel()
         loadSavedTime()
-        
         acquireWakeLock()
         
-        Log.d(TAG, "TimerService created with saved time: $availableTimeSeconds")
+        Log.d(TAG, "TimerService created with saved time: $remainingTimeSeconds")
+        addLogEntry("Service started")
     }
 
     private fun acquireWakeLock() {
@@ -63,7 +69,7 @@ class TimerService : Service() {
                 "$TAG::TimerWakeLock"
             ).apply {
                 setReferenceCounted(false)
-                acquire(10 * 60 * 1000L) // 10 minutes max
+                acquire()
             }
             Log.d(TAG, "Wake lock acquired")
         } catch (e: Exception) {
@@ -72,19 +78,21 @@ class TimerService : Service() {
     }
     
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val action = intent?.action
-        Log.d(TAG, "onStartCommand: $action")
-        
-        when (action) {
-            ACTION_START_TIMER -> {
-                startTimer()
-            }
-            ACTION_STOP_TIMER -> {
-                stopTimer()
-            }
+        when (intent?.action) {
             ACTION_UPDATE_TIME -> {
                 val timeSeconds = intent.getIntExtra(EXTRA_TIME_SECONDS, 0)
-                updateAvailableTime(timeSeconds)
+                updateRemainingTime(timeSeconds)
+                startTimer()
+            }
+            ACTION_STOP_SERVICE -> {
+                stopTimer()
+                stopSelf()
+            }
+            ACTION_APP_FOREGROUND -> {
+                handleAppForeground()
+            }
+            ACTION_APP_BACKGROUND -> {
+                handleAppBackground()
             }
         }
         
@@ -98,6 +106,7 @@ class TimerService : Service() {
         Log.d(TAG, "TimerService destroyed")
         releaseWakeLock()
         stopTimer()
+        saveTime()
     }
 
     private fun releaseWakeLock() {
@@ -115,217 +124,220 @@ class TimerService : Service() {
     }
     
     private fun createNotificationChannel() {
-        try {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Timer Service",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Background timer service notifications"
-                setShowBadge(false)
-            }
-            
-            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            notificationManager.createNotificationChannel(channel)
-            Log.d(TAG, "Notification channel created")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to create notification channel", e)
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "Screen Time Tracker",
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "Shows remaining screen time and event log"
+            setShowBadge(false)
+            setSound(null, null)
         }
+        notificationManager.createNotificationChannel(channel)
     }
     
     private fun startTimer() {
-        if (isTimerRunning) {
-            Log.d(TAG, "Timer already running, ignoring start request")
-            return
-        }
+        Log.d(TAG, "Starting screen time timer")
         
-        if (availableTimeSeconds <= 0) {
-            Log.d(TAG, "No time available, cannot start timer")
-            broadcastTimerUpdate("time_expired")
-            return
-        }
+        // Start foreground service with initial notification
+        startForeground(NOTIFICATION_ID, createNotification())
         
-        Log.d(TAG, "Starting background timer with ${availableTimeSeconds}s remaining")
-        isTimerRunning = true
+        // Cancel any existing timer
+        timerRunnable?.let { handler.removeCallbacks(it) }
         
-        try {
-            val notification = createNotification("Timer Running", "Time remaining: ${formatTime(availableTimeSeconds)}")
-            startForeground(NOTIFICATION_ID, notification)
-            
-            timerRunnable = object : Runnable {
-                override fun run() {
-                    if (isTimerRunning && availableTimeSeconds > 0) {
-                        tick()
-                        handler.postDelayed(this, 1000)
-                    }
-                }
+        // Start new timer that ticks every second
+        timerRunnable = object : Runnable {
+            override fun run() {
+                tick()
+                handler.postDelayed(this, 1000)
             }
-            
-            handler.post(timerRunnable!!)
-            broadcastTimerUpdate("timer_started")
-            
-            Log.d(TAG, "Timer started successfully")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start timer", e)
-            stopTimer()
         }
+        handler.post(timerRunnable!!)
+        
+        broadcastUpdate()
+        addLogEntry("Timer started")
     }
     
     private fun stopTimer() {
-        if (!isTimerRunning) {
-            Log.d(TAG, "Timer not running, ignoring stop request")
-            return
-        }
-        
-        Log.d(TAG, "Stopping background timer")
-        isTimerRunning = false
-        
+        Log.d(TAG, "Stopping timer")
         timerRunnable?.let {
             handler.removeCallbacks(it)
             timerRunnable = null
         }
-        
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(Service.STOP_FOREGROUND_REMOVE)
-            } else {
-                @Suppress("DEPRECATION")
-                stopForeground(true)
-            }
-            Log.d(TAG, "Stopped foreground service")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to stop foreground service", e)
-        }
-        
-        broadcastTimerUpdate("timer_stopped")
+        saveTime()
+        addLogEntry("Timer stopped")
     }
     
     private fun tick() {
-        availableTimeSeconds--
-        saveTime()
+        val isScreenOn = powerManager.isInteractive
         
-        Log.v(TAG, "Tick: ${availableTimeSeconds}s remaining")
-        
-        // Update notification every 30 seconds
-        if (availableTimeSeconds % 30 == 0) {
-            updateNotification()
+        // Only count down if screen is on and app is not in foreground
+        if (isScreenOn && !isAppInForeground && remainingTimeSeconds > 0) {
+            remainingTimeSeconds--
+            
+            // Log every 30 seconds
+            if (remainingTimeSeconds % 30 == 0) {
+                addLogEntry("Screen ON: ${formatTime(remainingTimeSeconds)} left")
+            }
+            
+            if (remainingTimeSeconds == 0) {
+                handleTimeExpired()
+            }
         }
         
-        // Broadcast every second for UI updates
-        broadcastTimerUpdate("time_tick")
+        // Update notification every second for live countdown
+        updateNotification()
         
-        if (availableTimeSeconds <= 0) {
-            handleTimeExpired()
+        // Save time every 10 seconds
+        if (remainingTimeSeconds % 10 == 0) {
+            saveTime()
+        }
+        
+        // Broadcast update every second
+        broadcastUpdate()
+    }
+    
+    private fun handleAppForeground() {
+        if (!isAppInForeground) {
+            isAppInForeground = true
+            appForegroundStartTime = System.currentTimeMillis()
+            addLogEntry("App opened (timer paused)")
+            Log.d(TAG, "App entered foreground - timer paused")
+        }
+    }
+    
+    private fun handleAppBackground() {
+        if (isAppInForeground) {
+            isAppInForeground = false
+            
+            // Calculate time spent in foreground and add it back
+            val timeInForeground = (System.currentTimeMillis() - appForegroundStartTime) / 1000
+            remainingTimeSeconds += timeInForeground.toInt()
+            
+            addLogEntry("App closed (+${timeInForeground}s added)")
+            Log.d(TAG, "App left foreground - added ${timeInForeground}s back to timer")
+            
+            saveTime()
         }
     }
     
     private fun handleTimeExpired() {
         Log.d(TAG, "Time expired!")
-        stopTimer()
+        addLogEntry("⏰ TIME EXPIRED!")
         
-        try {
-            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.ic_dialog_alert)
-                .setContentTitle("⏰ Time Expired!")
-                .setContentText("Your screen time has run out!")
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setAutoCancel(true)
-                .build()
-                
-            try {
-                if (Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(this, "android.permission.POST_NOTIFICATIONS") == PackageManager.PERMISSION_GRANTED) {
-                    notificationManager.notify(999, notification)
-                } else {
-                    Log.w(TAG, "No POST_NOTIFICATIONS permission, cannot show notification")
-                }
-            } catch (e: SecurityException) {
-                Log.e(TAG, "SecurityException: POST_NOTIFICATIONS permission missing at runtime", e)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to show time expired notification", e)
-        }
-        
-        broadcastTimerUpdate("time_expired")
-    }
-    
-    private fun updateNotification() {
-        try {
-            val timeText = formatTime(availableTimeSeconds)
-            val notification = createNotification("Timer Running", "Time remaining: $timeText")
+        // Show high priority notification
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle("⏰ Screen Time Expired!")
+            .setContentText("Your screen time limit has been reached.")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setAutoCancel(true)
+            .build()
             
-            try {
-                if (Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(this, "android.permission.POST_NOTIFICATIONS") == PackageManager.PERMISSION_GRANTED) {
-                    notificationManager.notify(NOTIFICATION_ID, notification)
-                } else {
-                    Log.w(TAG, "No POST_NOTIFICATIONS permission, cannot show notification")
-                }
-            } catch (e: SecurityException) {
-                Log.e(TAG, "SecurityException: POST_NOTIFICATIONS permission missing at runtime", e)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to update notification", e)
-        }
+        notificationManager.notify(999, notification)
+        
+        broadcastUpdate()
     }
     
-    private fun createNotification(title: String, content: String): Notification {
+    private fun createNotification(): Notification {
+        // Create custom layout for notification
+        val notificationLayout = RemoteViews(packageName, R.layout.notification_timer)
+        val notificationLayoutExpanded = RemoteViews(packageName, R.layout.notification_timer_expanded)
+        
+        // Update the custom layouts
+        updateNotificationLayout(notificationLayout, false)
+        updateNotificationLayout(notificationLayoutExpanded, true)
+        
+        // Create intent to open app
         val intent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
-            this, 0, intent, PendingIntent.FLAG_IMMUTABLE
+            this, 0, intent, 
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(title)
-            .setContentText(content)
+            .setSmallIcon(android.R.drawable.ic_menu_recent_history)
+            .setCustomContentView(notificationLayout)
+            .setCustomBigContentView(notificationLayoutExpanded)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
-            .setAutoCancel(false)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setSilent(true)
             .build()
     }
     
-    private fun updateAvailableTime(newTime: Int) {
-        Log.d(TAG, "Updating available time from ${availableTimeSeconds}s to ${newTime}s")
-        availableTimeSeconds = newTime
-        saveTime()
+    private fun updateNotification() {
+        val notification = createNotification()
+        notificationManager.notify(NOTIFICATION_ID, notification)
+    }
+    
+    private fun updateNotificationLayout(remoteViews: RemoteViews, expanded: Boolean) {
+        // Update time
+        remoteViews.setTextViewText(R.id.time_remaining, formatTime(remainingTimeSeconds))
         
-        // Always broadcast the time update
-        broadcastTimerUpdate("time_tick")
-        
-        if (availableTimeSeconds > 0 && !isTimerRunning) {
-            Log.d(TAG, "Time available and timer not running - ready to start when conditions met")
-        } else if (availableTimeSeconds <= 0 && isTimerRunning) {
-            Log.d(TAG, "No time left - stopping timer")
-            stopTimer()
+        // Update status
+        val status = when {
+            remainingTimeSeconds <= 0 -> "Time Expired!"
+            isAppInForeground -> "App Open (Paused)"
+            !powerManager.isInteractive -> "Screen Off"
+            else -> "Screen On (Counting)"
         }
+        remoteViews.setTextViewText(R.id.timer_status, status)
+        
+        // Update log for expanded view
+        if (expanded) {
+            val logText = eventLog.takeLast(maxLogEntries).joinToString("\n")
+            remoteViews.setTextViewText(R.id.event_log, logText.ifEmpty { "No events yet..." })
+        }
+    }
+    
+    private fun updateRemainingTime(newTime: Int) {
+        remainingTimeSeconds = newTime
+        saveTime()
+        addLogEntry("Time set to ${formatTime(newTime)}")
+        Log.d(TAG, "Updated remaining time to $newTime seconds")
+    }
+    
+    private fun addLogEntry(message: String) {
+        val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+        val entry = "$timestamp: $message"
+        
+        eventLog.add(entry)
+        
+        // Keep only last N entries
+        if (eventLog.size > maxLogEntries * 2) {
+            eventLog.subList(0, eventLog.size - maxLogEntries).clear()
+        }
+        
+        Log.d(TAG, "Event: $entry")
     }
     
     private fun loadSavedTime() {
-        availableTimeSeconds = sharedPrefs.getInt(KEY_AVAILABLE_TIME, 0)
-        Log.d(TAG, "Loaded saved time: ${availableTimeSeconds}s")
+        remainingTimeSeconds = sharedPrefs.getInt(KEY_REMAINING_TIME, 0)
+        Log.d(TAG, "Loaded saved time: $remainingTimeSeconds seconds")
     }
     
     private fun saveTime() {
-        sharedPrefs.edit().putInt(KEY_AVAILABLE_TIME, availableTimeSeconds).apply()
+        sharedPrefs.edit().putInt(KEY_REMAINING_TIME, remainingTimeSeconds).apply()
     }
     
-    private fun broadcastTimerUpdate(action: String) {
-        val intent = Intent(action).apply {
-            putExtra("time_remaining", availableTimeSeconds)
-            putExtra("is_timer_running", isTimerRunning)
+    private fun broadcastUpdate() {
+        val intent = Intent("timer_update").apply {
+            putExtra("remaining_time", remainingTimeSeconds)
+            putExtra("is_app_foreground", isAppInForeground)
         }
         sendBroadcast(intent)
-        Log.v(TAG, "Broadcast sent: $action (time: ${availableTimeSeconds}s, running: $isTimerRunning)")
     }
     
     private fun formatTime(seconds: Int): String {
         val hours = seconds / 3600
         val minutes = (seconds % 3600) / 60
-        val remainingSeconds = seconds % 60
+        val secs = seconds % 60
         
         return when {
-            hours > 0 -> String.format("%02d:%02d:%02d", hours, minutes, remainingSeconds)
-            else -> String.format("%02d:%02d", minutes, remainingSeconds)
+            hours > 0 -> String.format("%d:%02d:%02d", hours, minutes, secs)
+            else -> String.format("%d:%02d", minutes, secs)
         }
     }
 }
