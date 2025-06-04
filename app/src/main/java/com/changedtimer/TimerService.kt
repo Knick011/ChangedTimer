@@ -44,6 +44,8 @@ class TimerService : Service() {
         const val ACTION_STOP_SERVICE = "stop_service"
         const val ACTION_APP_FOREGROUND = "app_foreground"
         const val ACTION_APP_BACKGROUND = "app_background"
+        const val ACTION_START_TIMER = "start_timer"
+        const val ACTION_STOP_TIMER = "stop_timer"
         const val EXTRA_TIME_SECONDS = "time_seconds"
     }
     
@@ -69,7 +71,7 @@ class TimerService : Service() {
                 "$TAG::TimerWakeLock"
             ).apply {
                 setReferenceCounted(false)
-                acquire()
+                acquire(10*60*1000L /*10 minutes*/)
             }
             Log.d(TAG, "Wake lock acquired")
         } catch (e: Exception) {
@@ -84,7 +86,10 @@ class TimerService : Service() {
                 updateRemainingTime(timeSeconds)
                 startTimer()
             }
-            ACTION_STOP_SERVICE -> {
+            ACTION_START_TIMER -> {
+                startTimer()
+            }
+            ACTION_STOP_SERVICE, ACTION_STOP_TIMER -> {
                 stopTimer()
                 stopSelf()
             }
@@ -241,14 +246,6 @@ class TimerService : Service() {
     }
     
     private fun createNotification(): Notification {
-        // Create custom layout for notification
-        val notificationLayout = RemoteViews(packageName, R.layout.notification_timer)
-        val notificationLayoutExpanded = RemoteViews(packageName, R.layout.notification_timer_expanded)
-        
-        // Update the custom layouts
-        updateNotificationLayout(notificationLayout, false)
-        updateNotificationLayout(notificationLayoutExpanded, true)
-        
         // Create intent to open app
         val intent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
@@ -258,8 +255,8 @@ class TimerService : Service() {
         
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_recent_history)
-            .setCustomContentView(notificationLayout)
-            .setCustomBigContentView(notificationLayoutExpanded)
+            .setContentTitle("Screen Time Remaining")
+            .setContentText("${formatTime(remainingTimeSeconds)} - ${getTimerStatus()}")
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -267,29 +264,18 @@ class TimerService : Service() {
             .build()
     }
     
-    private fun updateNotification() {
-        val notification = createNotification()
-        notificationManager.notify(NOTIFICATION_ID, notification)
-    }
-    
-    private fun updateNotificationLayout(remoteViews: RemoteViews, expanded: Boolean) {
-        // Update time
-        remoteViews.setTextViewText(R.id.time_remaining, formatTime(remainingTimeSeconds))
-        
-        // Update status
-        val status = when {
+    private fun getTimerStatus(): String {
+        return when {
             remainingTimeSeconds <= 0 -> "Time Expired!"
             isAppInForeground -> "App Open (Paused)"
             !powerManager.isInteractive -> "Screen Off"
             else -> "Screen On (Counting)"
         }
-        remoteViews.setTextViewText(R.id.timer_status, status)
-        
-        // Update log for expanded view
-        if (expanded) {
-            val logText = eventLog.takeLast(maxLogEntries).joinToString("\n")
-            remoteViews.setTextViewText(R.id.event_log, logText.ifEmpty { "No events yet..." })
-        }
+    }
+    
+    private fun updateNotification() {
+        val notification = createNotification()
+        notificationManager.notify(NOTIFICATION_ID, notification)
     }
     
     private fun updateRemainingTime(newTime: Int) {

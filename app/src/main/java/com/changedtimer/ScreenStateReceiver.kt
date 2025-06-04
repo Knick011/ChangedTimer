@@ -57,7 +57,6 @@ class ScreenStateReceiver : BroadcastReceiver() {
             }
             
             "com.changedtimer.APP_STATE_CHANGED" -> {
-                val isForeground = intent.getBooleanExtra("is_foreground", false)
                 val appState = intent.getStringExtra("app_state") ?: "UNKNOWN"
                 Log.d(TAG, "📱 App state changed notification received")
                 Log.d(TAG, "   └─ App is now: $appState")
@@ -67,25 +66,10 @@ class ScreenStateReceiver : BroadcastReceiver() {
     }
     
     private fun handleDeviceStateChange(context: Context, isLocked: Boolean, isScreenOn: Boolean) {
-        // Get current app state
-        val isAppInForeground = try {
-            val clazz = Class.forName("com.changedtimer.AppLifecycleListener")
-            val field = clazz.getDeclaredField("isAppInForeground")
-            field.isAccessible = true
-            field.getBoolean(null)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to check app foreground state", e)
-            false
-        }
-        
-        val appState = try {
-            val clazz = Class.forName("com.changedtimer.AppLifecycleListener")
-            val field = clazz.getDeclaredField("currentAppState")
-            field.isAccessible = true
-            field.get(null) as String
-        } catch (e: Exception) {
-            "UNKNOWN"
-        }
+        // For this simplified version, we'll assume app is not in foreground
+        // unless we can determine otherwise
+        val isAppInForeground = false
+        val appState = "BACKGROUND"
         
         // Log complete state
         Log.d(TAG, "")
@@ -107,7 +91,7 @@ class ScreenStateReceiver : BroadcastReceiver() {
         
         // Get current available time from shared preferences
         val sharedPrefs = context.getSharedPreferences("TimerAppPrefs", Context.MODE_PRIVATE)
-        val availableTime = sharedPrefs.getInt("available_time", 0)
+        val availableTime = sharedPrefs.getInt("remaining_time", 0)
         
         // Timer logic
         val shouldTimerRun = !isLocked && !isAppInForeground && availableTime > 0
